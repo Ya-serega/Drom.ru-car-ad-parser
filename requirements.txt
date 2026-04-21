@@ -1,0 +1,16 @@
+# Core data processing
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=19.0.0
+
+# Web scraping
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# Text processing
+pymorphy2>=0.9.1
+pymorphy2-dicts-ru>=2.4.0
+emoji>=2.10.0
+
+# UX / monitoring
+tqdm>=4.66.0
