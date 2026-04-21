@@ -26,11 +26,7 @@ data/raw/*.txt
 data/raw/sessions/
 data/processed/*.parquet
 data/processed/*.csv
-!data/.gitkeep
-!data/raw/.gitkeep
-!data/processed/.gitkeep
 !data/processed/sample_dataset.parquet
-!data/external/.gitkeep
 
 # === Логи и временные файлы ===
 *.log
