@@ -1,30 +1,63 @@
+"""
+Сборка, нормализация и обогащение финального датасета для ML.
+
+Объединяет данные листинга и карточек, парсит технические характеристики
+из сырого текста, применяет предобработку описаний, генерирует признаки
+и оптимизирует типы данных pandas для эффективного хранения в Parquet.
+"""
 import pandas as pd
 import re
 import logging
 import json
 import os
-from typing import Union
 from src.text_preprocessing import clean_text
 from src.feature_extraction import build_all_features
 import src.config as config
+from typing import Optional, Tuple, Dict
 
 logger = logging.getLogger(__name__)
 
 
-def parse_price(price_text):
+def parse_price(price_text: str) -> Optional[int]:
+    """Извлекает числовое значение цены из строки.
+
+    Args:
+        price_text: Строка с ценой (например, '1 200 000 ₽').
+
+    Returns:
+        Optional[int]: Цена в виде целого числа или None.
+    """
     if not price_text: return None
     digits = re.sub(r"\D", "", price_text)
     return int(digits) if digits else None
 
 
-def parse_mileage(text):
+def parse_mileage(text: str) -> Optional[int]:
+    """
+    Извлекает пробег из текста характеристики.
+
+    Args:
+        text: Строка с пробегом или статусом 'новый автомобиль'.
+
+    Returns:
+        Optional[int]: Пробег в км. Возвращает 0 для новых авто.
+    """
     if not text: return None
     if "новый автомобиль" in text.lower(): return 0
     digits = re.sub(r"\D", "", text)
     return int(digits) if digits else None
 
 
-def parse_engine(text):
+def parse_engine(text: str) -> Tuple[Optional[float], Optional[str]]:
+    """
+    Парсит объем двигателя и определяет тип топлива по ключевым словам.
+
+    Args:
+        text: Строка с характеристикой двигателя.
+
+    Returns:
+        Tuple[Optional[float], Optional[str]]: (объем в литрах, тип топлива).
+    """
     if not text: return None, None
     # Исправлен regex: убраны пробелы внутри processed-string
     vol = re.search(r"(\d\.\d)", text)
@@ -39,7 +72,19 @@ def parse_engine(text):
     return volume, fuel
 
 
-def parse_brand_model_year(header: str):
+def parse_brand_model_year(header: str) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+    """
+    Эвристически извлекает марку, модель и год выпуска из заголовка.
+
+    Учитывает составные названия марок (config.MULTI_WORD_BRANDS)
+    для корректного разделения на бренд и модель.
+
+    Args:
+        header: Заголовок объявления.
+
+    Returns:
+        Tuple: (марка, модель, год). Возвращает None при отсутствии данных.
+    """
     multi_word_brands = [b.lower() for b in config.MULTI_WORD_BRANDS]
     if not header: return None, None, None
 
@@ -67,24 +112,59 @@ def parse_brand_model_year(header: str):
     return brand, model, year
 
 
-def parse_seller_age(text):
+def parse_seller_age(text: str) -> Optional[int]:
+    """
+    Извлекает количество лет регистрации продавца на площадке.
+
+    Args:
+        text: Строка вида 'Более 5 лет на Drom'.
+
+    Returns:
+        Optional[int]: Количество лет.
+    """
     if not text: return None
     years = re.search(r"\d+", text)
     return int(years.group()) if years else None
 
 
-def parse_engine_hp(text):
+def parse_engine_hp(text: str) -> Optional[int]:
+    """
+    Извлекает мощность двигателя в л.с. из строки.
+
+    Args:
+        text: Строка с мощностью.
+
+    Returns:
+        Optional[int]: Мощность в л.с.
+    """
     if not text: return None
     digits = re.sub(r"\D", "", text)
     return int(digits) if digits else None
 
 
-def parse_city_name(city_name: str) -> Union[str, None]:
+def parse_city_name(city_name: str) -> Optional[str]:
+    """Оставляет только название города, удаляя регион и лишние пробелы.
+
+    Args:
+        city_name: Сырая строка города (например, 'Москва, Россия').
+
+    Returns:
+        Optional[str]: Очищенное название города.
+    """
     if not city_name or not isinstance(city_name, str): return None
     return re.sub(r"\s+", " ", city_name.split(",")[0].strip())
 
 
-def load_city_region_mapping(jsonl_file_path: str) -> dict:
+def load_city_region_mapping(jsonl_file_path: str) -> Dict[str, str]:
+    """
+    Загружает словарь соответствия городов регионам из JSONL.
+
+    Args:
+        jsonl_file_path: Путь к файлу towns.jsonl.
+
+    Returns:
+        Dict[str, str]: Маппинг {город_нижний_регистр: регион}.
+    """
     if not os.path.exists(jsonl_file_path):
         logger.warning(f"City mapping file not found: {jsonl_file_path}")
         return {}
@@ -103,7 +183,17 @@ def load_city_region_mapping(jsonl_file_path: str) -> dict:
     return city_to_region
 
 
-def map_city_to_region(city_name: str, city_to_region: dict) -> str:
+def map_city_to_region(city_name: str, city_to_region: Dict[str, str]) -> str:
+    """
+    Определяет регион города по прямому совпадению или парсингу строки.
+
+    Args:
+        city_name: Название города.
+        city_to_region: Словарь маппинга городов в регионы.
+
+    Returns:
+        str: Название региона или строка вида 'Unknown (...)'.
+    """
     if not city_name or not city_name.strip(): return "Unknown"
     city_name = city_name.strip()
     if "," in city_name:
@@ -114,6 +204,19 @@ def map_city_to_region(city_name: str, city_to_region: dict) -> str:
 
 
 def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Оптимизирует типы данных DataFrame для экономии памяти и ускорения I/O.
+
+    Приводит категориальные колонки к type='category',
+    числовые — к float32/Int16/Int8,
+    даты к datetime, текстовые к string.
+
+    Args:
+        df: Исходный DataFrame.
+
+    Returns:
+        pd.DataFrame: DataFrame с оптимизированными типами.
+    """
     df = df.copy()
     cat_cols = ['transmission_type', 'drive_type', 'color', 'wheel_side',
                 'generation', 'complectation', 'seller_type', 'drom_price_cat',
@@ -147,6 +250,19 @@ def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_dataset(df_ads: pd.DataFrame, df_list: pd.DataFrame) -> pd.DataFrame:
+    """
+    Оркестрирует сборку финального датасета из сырых данных.
+
+    Выполняет мерж по ad_id, парсинг числовых и текстовых полей,
+    нормализацию городов, генерацию ML-признаков и оптимизацию типов.
+
+    Args:
+        df_ads: DataFrame с распарсенными карточками объявлений.
+        df_list: DataFrame с данными страниц выдачи.
+
+    Returns:
+        pd.DataFrame: Готовый к сохранению и обучению DataFrame.
+    """
     # Гарантируем одинаковый тип ключа слияния
     df_ads["ad_id"] = df_ads["ad_id"].astype(str)
     df_list["ad_id"] = df_list["ad_id"].astype(str)

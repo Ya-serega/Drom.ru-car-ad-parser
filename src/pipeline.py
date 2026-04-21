@@ -1,3 +1,10 @@
+"""
+Оркестратор пайплайна сбора данных drom.ru.
+
+Управляет многопоточным парсингом листинга и карточек объявлений,
+обеспечивает устойчивые чекпоинты сессий, отслеживание истории
+(history_ids), graceful shutdown и итоговую сборку датасета.
+"""
 import os
 import time
 import json
@@ -11,7 +18,7 @@ from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
-from typing import Union
+from typing import Union, List
 
 from src.list_parser import parse_listing_pages, get_next_page_url
 from src.ads_parser import parse_ads
@@ -28,7 +35,21 @@ logger = logging.getLogger(__name__)
 
 
 class SessionManager:
+    """
+    Менеджер состояния парсинга и управления чекпоинтами.
+
+    Отвечает за сохранение прогресса листинга, атомарную запись
+    распарсенных объявлений, ведение глобальной истории ad_id
+    и финализацию сессии с сохранением в Parquet.
+    """
+
     def __init__(self, session_id: str):
+        """
+        Инициализирует директорию сессии и загружает состояние.
+
+        Args:
+            session_id: Уникальный идентификатор сессии (обычно timestamp).
+        """
         self.id = session_id
         self.dir = Path(config.SESSIONS_DIR) / session_id
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -60,6 +81,14 @@ class SessionManager:
                 logger.warning(f"Failed to load session checkpoint: {e}")
 
     def save_listing_state(self, state: dict) -> None:
+        """
+        Атомарно сохраняет состояние пагинации для URL.
+
+        Использует временный файл и os.replace() для гарантии целостности.
+
+        Args:
+            state: Словарь с текущей страницей, next_url и списком ad_id.
+        """
         self.listing_state.update(state)
         tmp = self.ckpt_listings.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
@@ -67,13 +96,31 @@ class SessionManager:
         os.replace(tmp, self.ckpt_listings)  # Atomic rename
 
     def append_ads(self, batch: list[dict]) -> None:
+        """Добавляет пакет распарсенных объявлений в чекпоинт-файл.
+
+        Args:
+            batch: Список словарей с данными объявлений.
+        """
         if not batch: return
         df = pd.DataFrame(batch)
         file_exists = self.ckpt_ads.exists()
         df.to_csv(self.ckpt_ads, mode="a", header=not file_exists, index=False)
         self.session_ids.update(df["ad_id"].astype(str))
 
-    def finalize(self, final_df: pd.DataFrame) -> None:
+    def finalize(self, final_df: pd.DataFrame) -> Path:
+        """
+        Сохраняет итоговый датасет, обновляет историю и очищает сессию.
+
+        Генерирует динамическое имя файла на основе брендов и количества
+        строк, сохраняет в Parquet, добавляет новые ad_id в history_ids.txt
+        и пытается удалить временные файлы сессии (с обработкой блокировок Windows).
+
+        Args:
+            final_df: Финальный DataFrame с признаками.
+
+        Returns:
+            Path: Путь к сохраненному файлу .parquet.
+        """
         # Динамический нейминг
         brands = final_df["brand"].dropna().unique()
         brand_tag = "_".join(sorted(brands))[:50] if len(brands) <= 5 else "multi_brand"
@@ -121,7 +168,23 @@ class SessionManager:
 
 
 class PipelineOrchestrator:
-    def __init__(self, max_workers: int = 4, batch_size: int = 100, max_pages = 1000):
+    """
+    Главный контроллер пайплайна сбора данных.
+
+    Координирует обход страниц, многопоточный парсинг карточек,
+    дедупликацию, буферизацию записи и вызов Dataset Builder.
+    Поддерживает безопасную остановку по SIGINT/SIGTERM.
+    """
+
+    def __init__(self, max_workers: int = 4, batch_size: int = 100, max_pages: int = 1000):
+        """
+        Настраивает пул воркеров, параметры буфера и обработчики сигналов.
+
+        Args:
+            max_workers: Количество потоков для парсинга карточек.
+            batch_size: Размер пакета перед записью в чекпоинт.
+            max_pages: Лимит страниц на один URL листинга.
+        """
         self.max_workers = max_workers
         self.batch_size = batch_size
         self.max_pages = max_pages
@@ -137,18 +200,38 @@ class PipelineOrchestrator:
         config.init_dirs()
         os.makedirs(config.SESSIONS_DIR, exist_ok=True)
 
-    def _handle_shutdown(self, signum, frame):
+    def _handle_shutdown(self, signum):
+        """
+        Обработчик сигналов прерывания (Ctrl+C, kill).
+
+        Устанавливает флаг остановки для безопасного завершения цикла.
+        """
         logger.warning(f"Shutdown signal {signum} received. Flushing...")
         self.running = False
 
     def _flush_buffer(self):
+        """
+        Поточно-безопасная запись буфера в чекпоинт сессии.
+
+        Использует threading.Lock для предотвращения race conditions.
+        """
+
         with self.lock:
             if self.buffer:
                 self.session.append_ads(self.buffer)
                 logger.info(f"Flushed {len(self.buffer)} ads to checkpoint.")
                 self.buffer.clear()
 
-    def collect_listings(self) -> list[dict]:
+    def collect_listings(self) -> List[dict]:
+        """
+        Итерирует по TARGET_URLS, собирает превью объявлений с пагинацией.
+
+        Поддерживает resume по сохраненному состоянию листинга.
+        Сохраняет прогресс после каждой страницы.
+
+        Returns:
+            list[dict]: Список словарей с метаданными объявлений из листинга.
+        """
         all_records = []
         for url in config.TARGET_URLS:
             # Resume или старт с начала
@@ -185,6 +268,16 @@ class PipelineOrchestrator:
         return all_records
 
     def run(self):
+        """
+        Запускает полный цикл пайплайна: сбор → фильтрация → парсинг → сборка.
+
+        Выполняет:
+        1. Сбор листинга с учетом resume.
+        2. Фильтрацию уже известных ad_id (history + session).
+        3. Многопоточный парсинг карточек с буферизацией.
+        4. Финальную сборку датасета через build_dataset.
+        Обеспечивает логирование времени выполнения и graceful exit.
+        """
         logger.info(f"=== Pipeline Started | Session: {self.session.id} ===")
         t_start = time.time()
 
@@ -258,6 +351,15 @@ class PipelineOrchestrator:
         logger.info(f"Total runtime: {time.time() - t_start:.1f} sec")
 
     def _parse_ad(self, ad: dict) -> Union[dict, None]:
+        """
+        Воркер-функция для парсинга одной карточки объявления.
+
+        Args:
+            ad: Словарь с метаданными (url, ad_id, referer).
+
+        Returns:
+            Union[dict, None]: Распарсенные данные карточки или None при ошибке.
+        """
         html = self.fetcher.get(ad["url"], referer=ad.get("referer"))
         if not html: return None
         data = parse_ads(html, ad["ad_id"])

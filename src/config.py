@@ -30,7 +30,7 @@ TARGET_URLS: List[str] = [
     "https://auto.drom.ru/bmw/5-series/page13/?ph=1&pts=2&unsold=1&minprobeg=8000&whereabouts[]=0"
 ]
 
-# Ключевые слова для Feature Extraction
+# Ключевые слова для Feature Extraction из текста
 DEALER_KEYWORDS = ["кредит", "автосалон", "трейд-ин", "гарантия", "поможем оформить", "рассрочка"]
 RESELLER_KEYWORDS = ["без вложений", "сел и поехал", "срочно", "вложений не требует", "торг у капота", "не бит не крашен"]
 TUNING_KEYWORDS = ["stage", "st-", "стэйдж", "турбина", "чип", "выхлоп", "прошивка", "тюнинг", "злой", "ковши", "усиленный"]

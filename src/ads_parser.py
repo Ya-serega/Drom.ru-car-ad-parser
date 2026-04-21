@@ -1,16 +1,51 @@
+"""
+Парсинг карточек объявлений drom.ru.
+
+Извлекает структурированные данные из HTML по заданным CSS-селекторам
+и атрибутам data-ftid. Поддерживает обработку отсутствующих блоков
+и возвращает унифицированный словарь для последующей сборки датасета.
+"""
 from bs4 import BeautifulSoup
 import datetime
 import re
+from typing import Optional
 
 
-def parse_ads(html, ad_id):
+def parse_ads(html: str, ad_id: str) -> dict:
+    """
+    Выполняет глубокий парсинг HTML-кода одной карточки объявления.
+
+    Args:
+        html: Полный HTML-код страницы объявления.
+        ad_id: Уникальный идентификатор объявления для привязки данных.
+
+    Returns:
+        dict: Словарь с извлеченными полями (цена, пробег, двигатель,
+        тип продавца, категория цены Drom, сырой текст и др.).
+        Отсутствующие данные возвращаются как None.
+    """
     soup = BeautifulSoup(html, "html.parser")
 
-    def get_text(selector):
+    def get_text(selector: str) -> Optional[str]:
+        """
+        Безопасно извлекает и обрезает текст по CSS-селектору.
+
+        Args:
+            selector: CSS-селектор целевого элемента.
+
+        Returns:
+            Optional[str]: Текст элемента или None.
+        """
         el = soup.select_one(selector)
         return el.get_text(" ", strip=True) if el else None
 
-    def extract_registrations():
+    def extract_registrations() -> Optional[int]:
+        """
+        Парсит блок отчета ГИБДД на количество регистрационных записей.
+
+        Returns:
+            Optional[int]: Количество записей или None, если блок отсутствует.
+        """
         vin_block = soup.select_one("[data-ga-stats-name='gibdd_report']")
         if not vin_block:
             return None
@@ -23,7 +58,13 @@ def parse_ads(html, ad_id):
 
         return None
 
-    def parse_seller_info():
+    def parse_seller_info() -> Optional[str]:
+        """
+        Определяет тип продавца по атрибутам data-ftid и заголовку карточки.
+
+        Returns:
+            Optional[str]: 'dealer', 'private', 'owner' или None.
+        """
         # 1. Проверяем, является ли дилером
         dealer_block = soup.select_one("[data-ftid='bulletin-card_dealer']")
         of_dealer_block = soup.select_one("[data-ftid='bulletin-card_dealer-official']")
@@ -46,11 +87,11 @@ def parse_ads(html, ad_id):
     data = {
         "ad_id": ad_id,
         "parse_date": datetime.date.today(),
-        "header": get_text("h1[data-ftid='page-title']"), #внутри марка, модель, год
+        "header": get_text("h1[data-ftid='page-title']"),  # внутри марка, модель, год
         "city": get_text("div[data-ftid='city'] span[data-ftid='value']"),
         "price": get_text("div[data-ftid='bulletin-price']"),
         "mileage_km": get_text("tr[data-ftid='specification-mileage'] td[data-ftid='value']"),
-        "engine_vol": get_text("tr[data-ftid='specification-engine'] td[data-ftid='value']"),# тип, объем
+        "engine_vol": get_text("tr[data-ftid='specification-engine'] td[data-ftid='value']"),  # тип, объем
         "engine_hp": get_text("tr[data-ftid='specification-power'] td[data-ftid='value']"),
         "transmission_type": get_text("tr[data-ftid='specification-transmission'] td[data-ftid='value']"),
         "drive_type": get_text("tr[data-ftid='specification-drive'] td[data-ftid='value']"),
@@ -61,10 +102,9 @@ def parse_ads(html, ad_id):
         "generation": get_text("tr[data-ftid='specification-generation'] td[data-ftid='value']"),
         "complectation": get_text("tr[data-ftid='specification-complectation'] td[data-ftid='value']"),
         "seller_type": parse_seller_info(),
-        "seller_reg_time": get_text("div[data-ftid='bulletin-card_age']"), # Более N лет на Дроме
+        "seller_reg_time": get_text("div[data-ftid='bulletin-card_age']"),  # Более N лет на Дроме
         "drom_price_cat": get_text("div[data-ga-stats-name='good_deal_mark']"),
-        "raw_text": get_text("div[data-ftid='info-full'] span[data-ftid='value']")
-                    or get_text("div[data-ftid='info-short'] span[data-ftid='value']")
+        "raw_text": get_text("div[data-ftid='info-full'] span[data-ftid='value']") or get_text("div[data-ftid='info-short'] span[data-ftid='value']")
     }
 
     return data
